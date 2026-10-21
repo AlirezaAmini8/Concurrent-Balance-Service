@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: concurrent-balance-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/balance}
+    username: ${DB_USERNAME:balance}
+    password: ${DB_PASSWORD:balance}
+    hikari:
+      # Every operation holds one connection for the duration of a short DB transaction.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+  flyway:
+    enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
