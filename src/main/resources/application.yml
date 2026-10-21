@@ -8,6 +8,9 @@ spring:
     hikari:
       # Every operation holds one connection for the duration of a short DB transaction.
       maximum-pool-size: ${DB_POOL_SIZE:20}
+      # Bound the time a request waits for a row lock held by another transaction, so a stuck
+      # transaction degrades into retryable errors instead of piling up every request behind it.
+      connection-init-sql: SET lock_timeout = '${DB_LOCK_TIMEOUT:5s}'
   flyway:
     enabled: true
 
