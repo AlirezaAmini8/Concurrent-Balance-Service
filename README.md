@@ -8,15 +8,15 @@ A Spring Boot service that manages account balances. It supports **credit**, **d
 
 ## TL;DR of the design
 
-| Concern | Mechanism |
-|---|---|
-| Thread safety, no lost updates | `SELECT … FOR UPDATE` row lock on each involved account, inside one DB transaction |
-| Independent accounts don't block | Locks are per row, so operations on different accounts never wait for each other |
-| No negative balance | Funds are checked under the lock. A `CHECK (balance >= 0)` constraint backs it up |
-| Transfer atomicity | Debit, credit, ledger entries and outcome all commit in **one** DB transaction, or none of them do |
-| No deadlocks | Accounts are always locked in the same global (sorted) order |
+| Concern                                   | Mechanism                                                                                                                                                   |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Thread safety, no lost updates            | `SELECT … FOR UPDATE` row lock on each involved account, inside one DB transaction                                                                          |
+| Independent accounts don't block          | Locks are per row, so operations on different accounts never wait for each other                                                                            |
+| No negative balance                       | Funds are checked under the lock. A `CHECK (balance >= 0)` constraint backs it up                                                                           |
+| Transfer atomicity                        | Debit, credit, ledger entries and outcome all commit in **one** DB transaction, or none of them do                                                          |
+| No deadlocks                              | Accounts are always locked in the same global (sorted) order                                                                                                |
 | Idempotency (incl. concurrent duplicates) | `INSERT … ON CONFLICT DO NOTHING` on the `transactions` primary key. Postgres makes a concurrent duplicate wait for the first one, which then gets replayed |
-| Auditability | Append-only `ledger_entries`. For each account, balance = Σ ledger amounts |
+| Auditability                              | Append-only `ledger_entries`. For each account, balance = Σ ledger amounts                                                                                  |
 
 ---
 
@@ -32,30 +32,27 @@ docker compose up --build       # PostgreSQL + the app on http://localhost:8080
 docker compose up -d postgres && ./mvnw spring-boot:run
 ```
 
-If ports 5432/8080 are already in use: `POSTGRES_PORT=55432 APP_PORT=18080 docker compose up`.
-Configuration is read from environment variables: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE`, `DB_LOCK_TIMEOUT`, `SERVER_PORT`.
-
 ### REST API
 
-| Method & path | Body | Success |
-|---|---|---|
-| `POST /api/v1/accounts` | `{"accountId":"A","initialBalance":1000}` | `201` + `Location` |
-| `GET /api/v1/accounts/{id}` | | `200 {"accountId","balance"}` |
-| `GET /api/v1/accounts/{id}/ledger` | | `200 [ledger entries]` |
-| `POST /api/v1/accounts/{id}/credit` | `{"amount":500,"transactionId":"TX-1"}` | `200` transaction |
-| `POST /api/v1/accounts/{id}/debit` | `{"amount":500,"transactionId":"TX-2"}` | `200` transaction |
-| `POST /api/v1/transfers` | `{"sourceAccountId":"A","destinationAccountId":"B","amount":300,"transactionId":"TX-3"}` | `200` transaction |
-| `GET /api/v1/transactions/{id}` | | `200` transaction |
+| Method & path                       | Body                                                                                     | Success                       |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------- |
+| `POST /api/v1/accounts`             | `{"accountId":"A","initialBalance":1000}`                                                | `201` + `Location`            |
+| `GET /api/v1/accounts/{id}`         |                                                                                          | `200 {"accountId","balance"}` |
+| `GET /api/v1/accounts/{id}/ledger`  |                                                                                          | `200 [ledger entries]`        |
+| `POST /api/v1/accounts/{id}/credit` | `{"amount":500,"transactionId":"TX-1"}`                                                  | `200` transaction             |
+| `POST /api/v1/accounts/{id}/debit`  | `{"amount":500,"transactionId":"TX-2"}`                                                  | `200` transaction             |
+| `POST /api/v1/transfers`            | `{"sourceAccountId":"A","destinationAccountId":"B","amount":300,"transactionId":"TX-3"}` | `200` transaction             |
+| `GET /api/v1/transactions/{id}`     |                                                                                          | `200` transaction             |
 
 Errors use RFC 9457 `application/problem+json`:
 
-| Status | Meaning | Recorded? |
-|---|---|---|
-| `400` | invalid input (amount ≤ 0, blank ids, same-account transfer, malformed JSON) | no |
-| `404` | unknown account / transaction | no |
-| `409` | account already exists, or `transactionId` reused for a **different** operation | no |
-| `422` | insufficient funds | **yes**: final, replays get the same `422` |
-| `503` + `Retry-After` | lock timeout / transient DB error | no, so it's safe to retry with the same id |
+| Status                | Meaning                                                                         | Recorded?                                  |
+| --------------------- | ------------------------------------------------------------------------------- | ------------------------------------------ |
+| `400`                 | invalid input (amount ≤ 0, blank ids, same-account transfer, malformed JSON)    | no                                         |
+| `404`                 | unknown account / transaction                                                   | no                                         |
+| `409`                 | account already exists, or `transactionId` reused for a **different** operation | no                                         |
+| `422`                 | insufficient funds                                                              | **yes**: final, replays get the same `422` |
+| `503` + `Retry-After` | lock timeout / transient DB error                                               | no, so it's safe to retry with the same id |
 
 ```bash
 curl -X POST localhost:8080/api/v1/accounts -H 'Content-Type: application/json' -d '{"accountId":"A","initialBalance":1000}'
@@ -82,17 +79,17 @@ The layering is deliberately simple: controllers → services → repositories. 
 **Data model** (`V1__create_balance_schema.sql`):
 
 - `accounts(id, balance CHECK >= 0)`: the current balance.
-- `transactions(id = transactionId PK, type, source, destination, amount, status, rejection_reason)`: the idempotency registry. It stores each request's *fingerprint* and its final outcome.
+- `transactions(id = transactionId PK, type, source, destination, amount, status, rejection_reason)`: the idempotency registry. It stores each request's _fingerprint_ and its final outcome.
 - `ledger_entries(account_id, transaction_id, entry_type, signed amount, balance_after)`: an append-only audit trail. A transfer writes two entries that sum to zero.
 
 The balance is stored as a column **and** recorded in the ledger. The column makes `getBalance` and the funds check O(1). The ledger makes every balance explainable and reconcilable. The tests check that the two always agree.
 
 ### Why these technologies
 
-- **PostgreSQL**: balances must survive restarts, and the service should be able to run as several instances behind a load balancer. The database is therefore the single source of truth and the single place where concurrency is coordinated. In-JVM locks (`synchronized`, `ReentrantLock`) only protect one process, so two instances would happily double-spend. *Trade-off:* every operation pays a DB round trip, and a single very hot account is limited by how fast one row lock can be passed between transactions (see *Performance*).
-- **Spring JDBC (`JdbcClient`) instead of JPA**: the correctness of this service depends on exactly which SQL runs and which locks it takes. Plain SQL keeps that explicit and reviewable (`FOR UPDATE`, `ON CONFLICT DO NOTHING`, `RETURNING`). JPA would add a persistence context, dirty checking and flush ordering, none of which help here. *Trade-off:* hand-written row mappers.
+- **PostgreSQL**: balances must survive restarts, and the service should be able to run as several instances behind a load balancer. The database is therefore the single source of truth and the single place where concurrency is coordinated. In-JVM locks (`synchronized`, `ReentrantLock`) only protect one process, so two instances would happily double-spend. _Trade-off:_ every operation pays a DB round trip, and a single very hot account is limited by how fast one row lock can be passed between transactions (see _Performance_).
+- **Spring JDBC (`JdbcClient`) instead of JPA**: the correctness of this service depends on exactly which SQL runs and which locks it takes. Plain SQL keeps that explicit and reviewable (`FOR UPDATE`, `ON CONFLICT DO NOTHING`, `RETURNING`). JPA would add a persistence context, dirty checking and flush ordering, none of which help here. _Trade-off:_ hand-written row mappers.
 - **Flyway**: versioned, reproducible schema, including the constraints that act as the last line of defence.
-- **Testcontainers**: row locks, `ON CONFLICT` waiting behaviour and constraints are exactly what needs testing, and H2 does not reproduce them faithfully. *Trade-off:* tests need Docker.
+- **Testcontainers**: row locks, `ON CONFLICT` waiting behaviour and constraints are exactly what needs testing, and H2 does not reproduce them faithfully. _Trade-off:_ tests need Docker.
 - **Not used: Redis or Kafka.** A distributed lock in Redis would be a second source of truth that can disagree with the database (lease expiry, GC pauses). Kafka would make the API asynchronous. Neither is needed to meet the requirements, so neither is used.
 
 ---
@@ -119,12 +116,12 @@ COMMIT
 
 **Why pessimistic row locks?**
 
-| Alternative | Why not |
-|---|---|
-| `synchronized` / `ReentrantLock` per account in the JVM | Not safe with more than one instance. Balances in memory are lost on restart |
-| Optimistic locking (`@Version` + retry) | Works, but this workload is contended *by design* (hot accounts, concurrent retries). Optimistic locking then degrades into retry storms and needs retry or backoff code in every path. Pessimistic locks queue requests fairly instead |
-| Single conditional `UPDATE … SET balance = balance - ? WHERE balance >= ?` | Atomic for one account and elegant for debit. For a transfer, though, the two `UPDATE`s lock rows in debit→credit order, which can deadlock (A→B vs B→A). It also loses the explicit read the ledger's `balance_after` needs |
-| `SERIALIZABLE` isolation | Correct, but it surfaces conflicts as serialization failures that must be retried. Explicit locks make the waiting deterministic |
+| Alternative                                                                | Why not                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `synchronized` / `ReentrantLock` per account in the JVM                    | Not safe with more than one instance. Balances in memory are lost on restart                                                                                                                                                            |
+| Optimistic locking (`@Version` + retry)                                    | Works, but this workload is contended _by design_ (hot accounts, concurrent retries). Optimistic locking then degrades into retry storms and needs retry or backoff code in every path. Pessimistic locks queue requests fairly instead |
+| Single conditional `UPDATE … SET balance = balance - ? WHERE balance >= ?` | Atomic for one account and elegant for debit. For a transfer, though, the two `UPDATE`s lock rows in debit→credit order, which can deadlock (A→B vs B→A). It also loses the explicit read the ledger's `balance_after` needs            |
+| `SERIALIZABLE` isolation                                                   | Correct, but it surfaces conflicts as serialization failures that must be retried. Explicit locks make the waiting deterministic                                                                                                        |
 
 `READ COMMITTED` is enough because no decision is ever made from an unlocked read. The funds check reads the balance under `FOR UPDATE`, which in PostgreSQL always returns the latest committed version of the row. `getBalance` is a plain read: a consistent snapshot, possibly outdated a millisecond later, which is the expected meaning of a balance query.
 
@@ -152,14 +149,14 @@ Claiming the id **before** locking accounts also makes replays cheap: they never
 
 ### Which outcomes are remembered
 
-| Outcome | Recorded? | Retry with same id |
-|---|---|---|
-| Applied | yes (`APPLIED`) | returns success, no effect |
-| Insufficient funds | **yes (`REJECTED`)** | returns the **same rejection**, even if money has arrived since |
-| Validation error, unknown account, overflow | no (rolled back) | is processed again |
-| Crash / DB error / lock timeout | no (rolled back) | is processed again |
+| Outcome                                     | Recorded?            | Retry with same id                                              |
+| ------------------------------------------- | -------------------- | --------------------------------------------------------------- |
+| Applied                                     | yes (`APPLIED`)      | returns success, no effect                                      |
+| Insufficient funds                          | **yes (`REJECTED`)** | returns the **same rejection**, even if money has arrived since |
+| Validation error, unknown account, overflow | no (rolled back)     | is processed again                                              |
+| Crash / DB error / lock timeout             | no (rolled back)     | is processed again                                              |
 
-**Decision: a rejection is final.** "Same key → same response" is the standard contract for idempotency keys (as used by Stripe and most payment APIs). The alternative was to *not* record rejections, so that a retry after a top-up could succeed. That would make the result of a `transactionId` depend on *when* it was retried, which is exactly the ambiguity idempotency is meant to remove. A client that wants another attempt sends a new `transactionId`. Validation errors are *not* recorded because those requests never became a real financial transaction, so the client may fix the input and reuse the id.
+**Decision: a rejection is final.** "Same key → same response" is the standard contract for idempotency keys (as used by Stripe and most payment APIs). The alternative was to _not_ record rejections, so that a retry after a top-up could succeed. That would make the result of a `transactionId` depend on _when_ it was retried, which is exactly the ambiguity idempotency is meant to remove. A client that wants another attempt sends a new `transactionId`. Validation errors are _not_ recorded because those requests never became a real financial transaction, so the client may fix the input and reuse the id.
 
 Implementation detail: a rejection has to be **committed** but reported as an **exception**. Throwing inside the transaction would roll back the `REJECTED` record. So `process()` returns the outcome, and the exception is thrown only after `TransactionTemplate` has committed. Programmatic `TransactionTemplate` is used instead of `@Transactional` for this reason; it also avoids proxy and self-invocation pitfalls.
 
@@ -181,14 +178,14 @@ The amount debited and the amount credited are the same `request.amount()`. The 
 
 `./mvnw test` runs everything: 55 tests, about 20 s including the container start.
 
-| Test class | What it checks |
-|---|---|
-| `AccountTest`, `TransactionRequestTest` | Unit tests for domain rules: validation, lock ordering, fingerprint comparison, overflow |
-| `BalanceServiceTest` | Functional behaviour of credit/debit/transfer, validation, unknown accounts, same-account transfer |
-| `IdempotencyTest` | Sequential replays of credit/debit/transfer (`1,000 + 3×100 with TX-1 = 1,100`), rejection is final, id reused for another operation → conflict, unrecorded failures can be retried |
-| `ConcurrencyTest` | All tasks released at once through a start gate (64 threads) to maximise races. Covers: competing debits (exactly 1 of 50 wins); 1,000 mixed credits/debits on one account with an exact expected balance; 1,000 oversubscribed debits (exactly 666 succeed, balance 100, never negative); 200 concurrent duplicates of credit, transfer and a rejected debit; 1,000 opposing A↔B transfers (no deadlock); 2,000 random transfers across 10 accounts (total money conserved); independent accounts don't block each other |
-| `TransferAtomicityTest` | A failure injected between debit and credit leaves no trace; a retry with the same id then succeeds |
-| `BalanceApiTest`, `ApiExceptionHandlerTest` | HTTP contract: status codes, problem details, JSON shape |
+| Test class                                  | What it checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AccountTest`, `TransactionRequestTest`     | Unit tests for domain rules: validation, lock ordering, fingerprint comparison, overflow                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `BalanceServiceTest`                        | Functional behaviour of credit/debit/transfer, validation, unknown accounts, same-account transfer                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `IdempotencyTest`                           | Sequential replays of credit/debit/transfer (`1,000 + 3×100 with TX-1 = 1,100`), rejection is final, id reused for another operation → conflict, unrecorded failures can be retried                                                                                                                                                                                                                                                                                                                                       |
+| `ConcurrencyTest`                           | All tasks released at once through a start gate (64 threads) to maximise races. Covers: competing debits (exactly 1 of 50 wins); 1,000 mixed credits/debits on one account with an exact expected balance; 1,000 oversubscribed debits (exactly 666 succeed, balance 100, never negative); 200 concurrent duplicates of credit, transfer and a rejected debit; 1,000 opposing A↔B transfers (no deadlock); 2,000 random transfers across 10 accounts (total money conserved); independent accounts don't block each other |
+| `TransferAtomicityTest`                     | A failure injected between debit and credit leaves no trace; a retry with the same id then succeeds                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `BalanceApiTest`, `ApiExceptionHandlerTest` | HTTP contract: status codes, problem details, JSON shape                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Integration tests also assert the **system invariants straight from SQL** after each test (`LedgerInvariants`): no negative balance, every balance equals the sum of its ledger, every applied transaction has exactly the ledger effect its type implies, rejected or failed transactions have none, and no `PENDING` row remains.
 
@@ -211,11 +208,3 @@ Integration tests also assert the **system invariants straight from SQL** after 
 - **Single database.** Horizontal scaling of the app is free, but the DB is the bottleneck and the single point of failure (mitigated by standard HA replication).
 - **Money is a `long` in minor units, single currency.** Multi-currency would add a currency column and forbid cross-currency transfers (or add FX).
 - **No authentication or authorization.** Out of scope for the challenge.
-
-## What I would do next with more time
-
-1. Load test (Gatling or k6) to measure throughput and latency for a hot account vs. many accounts, and tune pool size and `lock_timeout`.
-2. Observability: Micrometer metrics for lock wait time, rejections, replays and conflicts, plus tracing by `transactionId`.
-3. A transactional outbox that publishes `TransactionApplied` events (e.g. to Kafka) for downstream consumers without dual-write problems.
-4. A periodic reconciliation job comparing `accounts.balance` with the ledger in production (the same query the tests use).
-5. Pagination for the ledger endpoint, and an OpenAPI description.

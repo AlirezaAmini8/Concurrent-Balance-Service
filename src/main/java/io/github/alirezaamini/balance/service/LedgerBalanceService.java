@@ -23,12 +23,15 @@ import java.util.Map;
  * <p>
  * Each operation runs in a single database transaction that:
  * <ol>
- *     <li>claims the transactionId (idempotency; concurrent duplicates block here and then replay),</li>
- *     <li>locks the involved account rows in a global order (no lost updates, no deadlocks),</li>
- *     <li>checks funds, writes the new balances and ledger entries,</li>
- *     <li>records the outcome against the transactionId.</li>
+ * <li>claims the transactionId (idempotency; concurrent duplicates block here
+ * and then replay),</li>
+ * <li>locks the involved account rows in a global order (no lost updates, no
+ * deadlocks),</li>
+ * <li>checks funds, writes the new balances and ledger entries,</li>
+ * <li>records the outcome against the transactionId.</li>
  * </ol>
- * Either everything commits or nothing does, which is what makes a transfer atomic.
+ * Either everything commits or nothing does, which is what makes a transfer
+ * atomic.
  */
 @Service
 public class LedgerBalanceService implements BalanceService {
@@ -39,9 +42,9 @@ public class LedgerBalanceService implements BalanceService {
     private final TransactionTemplate transactionTemplate;
 
     public LedgerBalanceService(AccountRepository accounts,
-                                TransactionRepository transactions,
-                                LedgerRepository ledger,
-                                TransactionTemplate transactionTemplate) {
+            TransactionRepository transactions,
+            LedgerRepository ledger,
+            TransactionTemplate transactionTemplate) {
         this.accounts = accounts;
         this.transactions = transactions;
         this.ledger = ledger;
@@ -70,11 +73,6 @@ public class LedgerBalanceService implements BalanceService {
                 .orElseThrow(() -> new AccountNotFoundException(accountId));
     }
 
-    /**
-     * A rejection has to be committed (so replays see it) but reported to the caller as an exception.
-     * Throwing inside the transaction would roll the REJECTED record back, hence the exception is only
-     * raised here, after the transaction template has committed.
-     */
     private void execute(TransactionRequest request) {
         Transaction outcome = transactionTemplate.execute(status -> process(request));
         if (outcome.status() == TransactionStatus.REJECTED) {
@@ -109,9 +107,6 @@ public class LedgerBalanceService implements BalanceService {
         return transactions.complete(request.transactionId(), TransactionStatus.APPLIED, null);
     }
 
-    /**
-     * The transactionId is already committed by an earlier (or concurrent, now finished) request.
-     */
     private Transaction replay(TransactionRequest request) {
         Transaction existing = transactions.findById(request.transactionId())
                 .orElseThrow(() -> new IllegalStateException(
@@ -122,10 +117,6 @@ public class LedgerBalanceService implements BalanceService {
         return existing;
     }
 
-    /**
-     * Locks rows one by one in {@link TransactionRequest#accountIdsInLockOrder()} order. Every operation
-     * acquires locks in the same order, so a cycle (and therefore a deadlock) cannot form.
-     */
     private Map<String, Account> lockAccounts(TransactionRequest request) {
         Map<String, Account> locked = new HashMap<>();
         for (String accountId : request.accountIdsInLockOrder()) {

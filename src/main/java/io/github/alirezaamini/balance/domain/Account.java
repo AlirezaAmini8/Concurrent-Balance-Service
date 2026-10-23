@@ -2,9 +2,6 @@ package io.github.alirezaamini.balance.domain;
 
 import io.github.alirezaamini.balance.domain.exception.BalanceOverflowException;
 
-/**
- * Immutable snapshot of an account. Amounts are in minor units (e.g. cents) to avoid floating point.
- */
 public record Account(String id, long balance) {
 
     public boolean canDebit(long amount) {

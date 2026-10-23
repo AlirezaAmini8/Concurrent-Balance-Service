@@ -7,17 +7,12 @@ import io.github.alirezaamini.balance.domain.exception.ValidationException;
 import java.util.List;
 import java.util.stream.Stream;
 
-/**
- * A validated request to move money. Credit has only a destination, debit only a source,
- * transfer has both. Construction fails fast on invalid input, so an instance is always valid.
- */
 public record TransactionRequest(
         String transactionId,
         TransactionType type,
         String sourceAccountId,
         String destinationAccountId,
-        long amount
-) {
+        long amount) {
 
     public static final int MAX_TRANSACTION_ID_LENGTH = 128;
     public static final int MAX_ACCOUNT_ID_LENGTH = 64;
@@ -55,13 +50,14 @@ public record TransactionRequest(
     }
 
     public static TransactionRequest transfer(String sourceAccountId, String destinationAccountId,
-                                              long amount, String transactionId) {
+            long amount, String transactionId) {
         return new TransactionRequest(transactionId, TransactionType.TRANSFER,
                 sourceAccountId, destinationAccountId, amount);
     }
 
     /**
-     * Involved accounts in a globally consistent (lexicographic) order. Locking in this order is
+     * Involved accounts in a globally consistent (lexicographic) order. Locking in
+     * this order is
      * what makes concurrent transfers A->B and B->A deadlock-free.
      */
     public List<String> accountIdsInLockOrder() {

@@ -13,10 +13,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Money movements. All of them are safe to retry with the same transactionId: a replay returns
- * the original outcome (200 with the transaction, or the same 422 rejection).
- */
 @RestController
 @RequestMapping("/api/v1")
 public class BalanceController {
