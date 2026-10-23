@@ -1,11 +1,14 @@
 package io.github.alirezaamini.balance.service;
 
+import io.github.alirezaamini.balance.domain.Transaction;
 import io.github.alirezaamini.balance.domain.TransactionStatus;
+import io.github.alirezaamini.balance.domain.exception.IdempotencyConflictException;
 import io.github.alirezaamini.balance.domain.exception.InsufficientFundsException;
 import io.github.alirezaamini.balance.support.ConcurrentRunner;
 import io.github.alirezaamini.balance.support.LedgerInvariants;
 import io.github.alirezaamini.balance.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -17,6 +20,7 @@ import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,6 +58,20 @@ class ConcurrencyTest extends PostgresIntegrationTest {
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(result.failuresOf(InsufficientFundsException.class)).isEqualTo(49);
+        assertThat(balanceService.getBalance("A")).isEqualTo(300);
+    }
+
+    // The exact scenario from the challenge. Only two threads, so the race window is narrow: repeat it.
+    @RepeatedTest(20)
+    void specScenarioTwoConcurrentDebitsOf700OnlyOneSucceeds() {
+        accountService.createAccount("A", 1_000);
+
+        ConcurrentRunner.Result result = ConcurrentRunner.run(2, List.of(
+                () -> balanceService.debit("A", 700, "TX-1"),
+                () -> balanceService.debit("A", 700, "TX-2")));
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(result.failuresOf(InsufficientFundsException.class)).isEqualTo(1);
         assertThat(balanceService.getBalance("A")).isEqualTo(300);
     }
 
@@ -101,6 +119,34 @@ class ConcurrencyTest extends PostgresIntegrationTest {
 
         assertThat(result.failureCountsByType()).isEmpty();
         assertThat(balanceService.getBalance("A")).isEqualTo(1_500);
+    }
+
+    @Test
+    void concurrentDuplicatesOfADebitAreAppliedExactlyOnce() {
+        accountService.createAccount("A", 1_000);
+
+        // 700 fits only once: a duplicate that slipped through would surface as InsufficientFundsException.
+        ConcurrentRunner.Result result = ConcurrentRunner.run(THREADS, IntStream.range(0, 200)
+                .<Runnable>mapToObj(i -> () -> balanceService.debit("A", 700, "TX-1"))
+                .toList());
+
+        assertThat(result.failureCountsByType()).isEmpty();
+        assertThat(balanceService.getBalance("A")).isEqualTo(300);
+        assertThat(accountService.getLedger("A")).hasSize(2);
+    }
+
+    @Test
+    void concurrentReuseOfATransactionIdForDifferentOperationsAppliesExactlyOne() {
+        accountService.createAccount("A", 1_000);
+
+        ConcurrentRunner.Result result = ConcurrentRunner.run(THREADS, IntStream.rangeClosed(1, 100)
+                .<Runnable>mapToObj(amount -> () -> balanceService.credit("A", amount, "TX-1"))
+                .toList());
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(result.failuresOf(IdempotencyConflictException.class)).isEqualTo(99);
+        Transaction winner = transactionQueryService.getTransaction("TX-1");
+        assertThat(balanceService.getBalance("A")).isEqualTo(1_000 + winner.amount());
     }
 
     @Test
@@ -174,6 +220,46 @@ class ConcurrencyTest extends PostgresIntegrationTest {
         assertThat(result.failures()).allMatch(InsufficientFundsException.class::isInstance);
         long total = IntStream.range(0, accountCount).mapToLong(i -> balanceService.getBalance("ACC-" + i)).sum();
         assertThat(total).isEqualTo(accountCount * initialBalance);
+    }
+
+    @Test
+    void mixedConcurrentOperationsAcrossManyAccountsAccountForEveryUnitOfMoney() {
+        int accountCount = 5;
+        long initialBalance = 1_000;
+        for (int i = 0; i < accountCount; i++) {
+            accountService.createAccount("ACC-" + i, initialBalance);
+        }
+        // Money entering minus money leaving the system, counted only for operations that succeeded.
+        AtomicLong netInflow = new AtomicLong();
+        Random random = new Random(7);
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 2_000; i++) {
+            String account = "ACC-" + random.nextInt(accountCount);
+            String other = "ACC-" + random.nextInt(accountCount);
+            long amount = 1 + random.nextInt(500);
+            String transactionId = "TX-" + i;
+            switch (random.nextInt(3)) {
+                case 0 -> tasks.add(() -> {
+                    balanceService.credit(account, amount, transactionId);
+                    netInflow.addAndGet(amount);
+                });
+                case 1 -> tasks.add(() -> {
+                    balanceService.debit(account, amount, transactionId);
+                    netInflow.addAndGet(-amount);
+                });
+                default -> {
+                    if (!account.equals(other)) {
+                        tasks.add(() -> balanceService.transfer(account, other, amount, transactionId));
+                    }
+                }
+            }
+        }
+
+        ConcurrentRunner.Result result = ConcurrentRunner.run(THREADS, tasks);
+
+        assertThat(result.failures()).allMatch(InsufficientFundsException.class::isInstance);
+        long total = IntStream.range(0, accountCount).mapToLong(i -> balanceService.getBalance("ACC-" + i)).sum();
+        assertThat(total).isEqualTo(accountCount * initialBalance + netInflow.get());
     }
 
     @Test
