@@ -33,23 +33,12 @@ public class TransactionRepository {
         this.jdbc = jdbc;
     }
 
-    /**
-     * Atomically claims the transactionId for the current database transaction.
-     * <p>
-     * If another in-flight database transaction already inserted the same id, PostgreSQL blocks this
-     * statement on the primary key until that transaction commits or rolls back. Afterwards:
-     * <ul>
-     *     <li>other committed: nothing is inserted and {@code false} is returned - this is a duplicate;</li>
-     *     <li>other rolled back: the row is inserted and {@code true} is returned - we own it now.</li>
-     * </ul>
-     * This is what makes concurrent duplicates of the same transactionId safe without an application lock.
-     */
     public boolean claim(TransactionRequest request) {
         int inserted = jdbc.sql("""
-                        INSERT INTO transactions (id, type, source_account_id, destination_account_id, amount, status)
-                        VALUES (:id, :type, :source, :destination, :amount, 'PENDING')
-                        ON CONFLICT (id) DO NOTHING
-                        """)
+                INSERT INTO transactions (id, type, source_account_id, destination_account_id, amount, status)
+                VALUES (:id, :type, :source, :destination, :amount, 'PENDING')
+                ON CONFLICT (id) DO NOTHING
+                """)
                 .param("id", request.transactionId())
                 .param("type", request.type().name())
                 .param("source", request.sourceAccountId())
@@ -61,11 +50,11 @@ public class TransactionRepository {
 
     public Transaction complete(String id, TransactionStatus status, RejectionReason reason) {
         return jdbc.sql("""
-                        UPDATE transactions
-                        SET status = :status, rejection_reason = :reason
-                        WHERE id = :id
-                        RETURNING *
-                        """)
+                UPDATE transactions
+                SET status = :status, rejection_reason = :reason
+                WHERE id = :id
+                RETURNING *
+                """)
                 .param("id", id)
                 .param("status", status.name())
                 .param("reason", reason == null ? null : reason.name())

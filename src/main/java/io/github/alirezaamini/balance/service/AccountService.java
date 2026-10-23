@@ -25,10 +25,6 @@ public class AccountService {
         this.ledger = ledger;
     }
 
-    /**
-     * Opens an account. A positive opening balance is written to the ledger so that
-     * the balance always equals the sum of the account's ledger entries.
-     */
     @Transactional
     public Account createAccount(String accountId, long initialBalance) {
         if (accountId == null || accountId.isBlank()) {

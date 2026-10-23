@@ -20,7 +20,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /**
- * Maps failures to RFC 9457 problem details. Bean validation and malformed JSON are handled by the
+ * Maps failures to RFC 9457 problem details. Bean validation and malformed JSON
+ * are handled by the
  * {@link ResponseEntityExceptionHandler} base class.
  */
 @RestControllerAdvice
@@ -33,7 +34,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.BAD_REQUEST, "Invalid request", e);
     }
 
-    @ExceptionHandler({AccountNotFoundException.class, TransactionNotFoundException.class})
+    @ExceptionHandler({ AccountNotFoundException.class, TransactionNotFoundException.class })
     ProblemDetail handleNotFound(RuntimeException e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e);
     }
@@ -60,11 +61,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Balance limit exceeded", e);
     }
 
-    /**
-     * Lock timeouts and other transient database errors. The database transaction was rolled back,
-     * so nothing was recorded and the client can safely retry with the same transactionId.
-     */
-    @ExceptionHandler({PessimisticLockingFailureException.class, TransientDataAccessException.class})
+    @ExceptionHandler({ PessimisticLockingFailureException.class, TransientDataAccessException.class })
     ResponseEntity<ProblemDetail> handleTransient(RuntimeException e) {
         log.warn("Transient database failure, request can be retried", e);
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
