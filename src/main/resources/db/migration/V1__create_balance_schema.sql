@@ -26,22 +26,3 @@ CREATE TABLE transactions
     CONSTRAINT transactions_type_valid CHECK (type IN ('CREDIT', 'DEBIT', 'TRANSFER')),
     CONSTRAINT transactions_status_valid CHECK (status IN ('PENDING', 'APPLIED', 'REJECTED'))
 );
-
--- Append-only audit trail. For every account: balance = SUM(amount) of its entries.
-CREATE TABLE ledger_entries
-(
-    id             BIGSERIAL PRIMARY KEY,
-    account_id     VARCHAR(64) NOT NULL REFERENCES accounts (id),
-    -- NULL only for the opening balance written when the account is created.
-    transaction_id VARCHAR(128) REFERENCES transactions (id),
-    entry_type     VARCHAR(16) NOT NULL,
-    -- Signed: positive for money in, negative for money out.
-    amount         BIGINT      NOT NULL,
-    balance_after  BIGINT      NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ledger_entries_amount_non_zero CHECK (amount <> 0),
-    CONSTRAINT ledger_entries_type_valid CHECK (entry_type IN ('OPENING', 'CREDIT', 'DEBIT'))
-);
-
-CREATE INDEX ledger_entries_account_idx ON ledger_entries (account_id, id);
-CREATE INDEX ledger_entries_transaction_idx ON ledger_entries (transaction_id);

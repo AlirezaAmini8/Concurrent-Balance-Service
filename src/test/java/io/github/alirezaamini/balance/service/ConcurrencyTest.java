@@ -5,7 +5,7 @@ import io.github.alirezaamini.balance.domain.TransactionStatus;
 import io.github.alirezaamini.balance.domain.exception.IdempotencyConflictException;
 import io.github.alirezaamini.balance.domain.exception.InsufficientFundsException;
 import io.github.alirezaamini.balance.support.ConcurrentRunner;
-import io.github.alirezaamini.balance.support.LedgerInvariants;
+import io.github.alirezaamini.balance.support.DatabaseInvariants;
 import io.github.alirezaamini.balance.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.RepeatedTest;
@@ -43,7 +43,7 @@ class ConcurrencyTest extends PostgresIntegrationTest {
 
     @AfterEach
     void invariantsHold() {
-        LedgerInvariants.assertHold(jdbc);
+        DatabaseInvariants.assertHold(jdbc);
     }
 
     // ---------------------------------------------------------------- single account
@@ -90,7 +90,6 @@ class ConcurrencyTest extends PostgresIntegrationTest {
         assertThat(result.failureCountsByType()).isEmpty();
         // 100,000 + 500 * 30 - 500 * 50; any lost update would show up as a different number.
         assertThat(balanceService.getBalance("A")).isEqualTo(90_000);
-        assertThat(accountService.getLedger("A")).hasSize(1 + 1_000);
     }
 
     @Test
@@ -132,7 +131,6 @@ class ConcurrencyTest extends PostgresIntegrationTest {
 
         assertThat(result.failureCountsByType()).isEmpty();
         assertThat(balanceService.getBalance("A")).isEqualTo(300);
-        assertThat(accountService.getLedger("A")).hasSize(2);
     }
 
     @Test

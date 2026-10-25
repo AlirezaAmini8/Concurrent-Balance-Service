@@ -13,10 +13,9 @@ A Spring Boot service that manages account balances. It supports **credit**, **d
 | Thread safety, no lost updates            | `SELECT … FOR UPDATE` row lock on each involved account, inside one DB transaction                                                                          |
 | Independent accounts don't block          | Locks are per row, so operations on different accounts never wait for each other                                                                            |
 | No negative balance                       | Funds are checked under the lock. A `CHECK (balance >= 0)` constraint backs it up                                                                           |
-| Transfer atomicity                        | Debit, credit, ledger entries and outcome all commit in **one** DB transaction, or none of them do                                                          |
+| Transfer atomicity                        | Debit, credit and outcome all commit in **one** DB transaction, or none of them do                                                                          |
 | No deadlocks                              | Accounts are always locked in the same global (sorted) order                                                                                                |
 | Idempotency (incl. concurrent duplicates) | `INSERT … ON CONFLICT DO NOTHING` on the `transactions` primary key. Postgres makes a concurrent duplicate wait for the first one, which then gets replayed |
-| Auditability                              | Append-only `ledger_entries`. For each account, balance = Σ ledger amounts                                                                                  |
 
 ---
 
@@ -38,7 +37,6 @@ docker compose up -d postgres && ./mvnw spring-boot:run
 | ----------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------- |
 | `POST /api/v1/accounts`             | `{"accountId":"A","initialBalance":1000}`                                                | `201` + `Location`            |
 | `GET /api/v1/accounts/{id}`         |                                                                                          | `200 {"accountId","balance"}` |
-| `GET /api/v1/accounts/{id}/ledger`  |                                                                                          | `200 [ledger entries]`        |
 | `POST /api/v1/accounts/{id}/credit` | `{"amount":500,"transactionId":"TX-1"}`                                                  | `200` transaction             |
 | `POST /api/v1/accounts/{id}/debit`  | `{"amount":500,"transactionId":"TX-2"}`                                                  | `200` transaction             |
 | `POST /api/v1/transfers`            | `{"sourceAccountId":"A","destinationAccountId":"B","amount":300,"transactionId":"TX-3"}` | `200` transaction             |
@@ -67,10 +65,10 @@ curl -X POST localhost:8080/api/v1/transfers -H 'Content-Type: application/json'
 
 ```
 api/           REST controllers, request/response DTOs, ApiExceptionHandler (problem details)
-service/       BalanceService (the interface from the challenge) + LedgerBalanceService,
+service/       BalanceService (the interface from the challenge) + DatabaseBalanceService,
                AccountService, TransactionQueryService
-domain/        Account, TransactionRequest, Transaction, LedgerEntry, enums, domain exceptions
-persistence/   AccountRepository, TransactionRepository, LedgerRepository (JdbcClient + SQL)
+domain/        Account, TransactionRequest, Transaction, enums, domain exceptions
+persistence/   AccountRepository, TransactionRepository (JdbcClient + SQL)
 resources/db/migration/   Flyway schema
 ```
 
@@ -80,9 +78,8 @@ The layering is deliberately simple: controllers → services → repositories. 
 
 - `accounts(id, balance CHECK >= 0)`: the current balance.
 - `transactions(id = transactionId PK, type, source, destination, amount, status, rejection_reason)`: the idempotency registry. It stores each request's _fingerprint_ and its final outcome.
-- `ledger_entries(account_id, transaction_id, entry_type, signed amount, balance_after)`: an append-only audit trail. A transfer writes two entries that sum to zero.
 
-The balance is stored as a column **and** recorded in the ledger. The column makes `getBalance` and the funds check O(1). The ledger makes every balance explainable and reconcilable. The tests check that the two always agree.
+The balance is stored as a single column, so `getBalance` and the funds check are O(1). The `transactions` table records every financial operation and its outcome, so each change to a balance can be traced back to the `transactionId` that caused it.
 
 ### Why these technologies
 
@@ -96,7 +93,7 @@ The balance is stored as a column **and** recorded in the ledger. The column mak
 
 ## Concurrency
 
-Every mutating operation runs in **one database transaction** (`READ COMMITTED`) in `LedgerBalanceService#process`:
+Every mutating operation runs in **one database transaction** (`READ COMMITTED`) in `DatabaseBalanceService#process`:
 
 ```
 1. claim transactionId        INSERT INTO transactions ... ON CONFLICT (id) DO NOTHING
@@ -105,7 +102,7 @@ Every mutating operation runs in **one database transaction** (`READ COMMITTED`)
    └─ missing?                → AccountNotFoundException → rollback (nothing recorded)
 3. check funds                source.balance >= amount ?
    └─ no                      → mark transaction REJECTED, commit, then throw InsufficientFundsException
-4. apply                      UPDATE balances, INSERT ledger entries
+4. apply                      UPDATE balances
 5. record outcome             UPDATE transactions SET status = 'APPLIED'
 COMMIT
 ```
@@ -120,7 +117,7 @@ COMMIT
 | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `synchronized` / `ReentrantLock` per account in the JVM                    | Not safe with more than one instance. Balances in memory are lost on restart                                                                                                                                                            |
 | Optimistic locking (`@Version` + retry)                                    | Works, but this workload is contended _by design_ (hot accounts, concurrent retries). Optimistic locking then degrades into retry storms and needs retry or backoff code in every path. Pessimistic locks queue requests fairly instead |
-| Single conditional `UPDATE … SET balance = balance - ? WHERE balance >= ?` | Atomic for one account and elegant for debit. For a transfer, though, the two `UPDATE`s lock rows in debit→credit order, which can deadlock (A→B vs B→A). It also loses the explicit read the ledger's `balance_after` needs            |
+| Single conditional `UPDATE … SET balance = balance - ? WHERE balance >= ?` | Atomic for one account and elegant for debit. For a transfer, though, the two `UPDATE`s lock rows in debit→credit order, which can deadlock (A→B vs B→A).                                                                    |
 | `SERIALIZABLE` isolation                                                   | Correct, but it surfaces conflicts as serialization failures that must be retried. Explicit locks make the waiting deterministic                                                                                                        |
 
 `READ COMMITTED` is enough because no decision is ever made from an unlocked read. The funds check reads the balance under `FOR UPDATE`, which in PostgreSQL always returns the latest committed version of the row. `getBalance` is a plain read: a consistent snapshot, possibly outdated a millisecond later, which is the expected meaning of a balance query.
@@ -164,9 +161,9 @@ Implementation detail: a rejection has to be **committed** but reported as an **
 
 ## Transfer
 
-**Atomicity:** the debit, the credit, both ledger entries and the outcome are written in a single PostgreSQL transaction. A partial state like `A = 700, B = 500` can never be committed. If anything fails between the debit and the credit (exception, connection loss, process crash), the whole transaction rolls back and both balances stay unchanged. Nothing is recorded under the `transactionId`, so the client can safely retry with the same id. `TransferAtomicityTest` injects a failure exactly between the two steps to check this.
+**Atomicity:** the debit, the credit and the outcome are written in a single PostgreSQL transaction. A partial state like `A = 700, B = 500` can never be committed. If anything fails between the debit and the credit (exception, connection loss, process crash), the whole transaction rolls back and both balances stay unchanged. Nothing is recorded under the `transactionId`, so the client can safely retry with the same id. `TransferAtomicityTest` injects a failure exactly between the two steps to check this.
 
-The amount debited and the amount credited are the same `request.amount()`. The invariant test checks that the ledger entries of every applied transfer sum to exactly zero.
+The amount debited and the amount credited are the same `request.amount()`. The concurrency tests check that the total money across all accounts is conserved by transfers.
 
 **Deadlocks: can they happen? No.** A deadlock needs a cycle: T1 holds A and waits for B, while T2 holds B and waits for A. Every operation locks its accounts **in the same global order** (sorted ids, see `TransactionRequest#accountIdsInLockOrder`), one by one, before writing anything. Both `transfer(A,B)` and `transfer(B,A)` lock A first, then B, so a cycle cannot form. The only other lock, the `transactionId` claim, is always taken first, and only one per transaction. The test `opposingTransfersBetweenTwoAccountsDoNotDeadlock` runs 1,000 opposing transfers concurrently. When the sorting was removed during development, PostgreSQL reported `deadlock detected` and the test failed.
 
@@ -187,7 +184,7 @@ The amount debited and the amount credited are the same `request.amount()`. The 
 | `TransferAtomicityTest`                     | A failure injected between debit and credit leaves no trace; a retry with the same id then succeeds; when the first of 50 concurrent duplicates fails mid-transfer, a waiting duplicate takes over the id and applies it exactly once                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `BalanceApiTest`, `ApiExceptionHandlerTest` | HTTP contract: status codes, problem details, JSON shape                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
-Integration tests also assert the **system invariants straight from SQL** after each test (`LedgerInvariants`): no negative balance, every balance equals the sum of its ledger, every applied transaction has exactly the ledger effect its type implies, rejected or failed transactions have none, and no `PENDING` row remains.
+Integration tests also assert the **system invariants straight from SQL** after each test (`DatabaseInvariants`): no negative balance and no `PENDING` row remains.
 
 **Do the tests catch real bugs?** During development, two mutations were applied to check this. Removing `FOR UPDATE` made 5 of the 9 concurrency tests fail (lost updates, wrong balances). Removing the lock ordering made the deadlock and random-transfer tests fail with `deadlock detected`.
 
@@ -203,7 +200,7 @@ Integration tests also assert the **system invariants straight from SQL** after 
 ## Trade-offs and known limitations
 
 - **Hot accounts** are the main scalability limit, since one row is one serialization point. Typical remedies, not implemented here: split a hot account into N sub-accounts (sharded balances), or batch many small credits into one update.
-- **Unbounded growth** of the `transactions` and `ledger_entries` tables. Production would add time-based partitioning and a retention window for idempotency keys (and document that window to clients).
+- **Unbounded growth** of the `transactions` table. Production would add time-based partitioning and a retention window for idempotency keys (and document that window to clients).
 - **Idempotency keys are global**, not scoped per client or tenant. With several API clients, the key would become `(clientId, transactionId)`.
 - **Single database.** Horizontal scaling of the app is free, but the DB is the bottleneck and the single point of failure (mitigated by standard HA replication).
 - **Money is a `long` in minor units, single currency.** Multi-currency would add a currency column and forbid cross-currency transfers (or add FX).
@@ -214,5 +211,4 @@ Integration tests also assert the **system invariants straight from SQL** after 
 1. Load test (Gatling or k6) to measure throughput and latency for a hot account vs. many accounts, and tune pool size and `lock_timeout`.
 2. Observability: Micrometer metrics for lock wait time, rejections, replays and conflicts, plus tracing by `transactionId`.
 3. A transactional outbox that publishes `TransactionApplied` events (e.g. to Kafka) for downstream consumers without dual-write problems.
-4. A periodic reconciliation job comparing `accounts.balance` with the ledger in production (the same query the tests use).
-5. Pagination for the ledger endpoint, and an OpenAPI description.
+4. An OpenAPI description of the REST API.

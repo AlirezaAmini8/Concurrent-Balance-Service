@@ -1,7 +1,6 @@
 package io.github.alirezaamini.balance.service;
 
 import io.github.alirezaamini.balance.domain.Account;
-import io.github.alirezaamini.balance.domain.LedgerEntryType;
 import io.github.alirezaamini.balance.domain.RejectionReason;
 import io.github.alirezaamini.balance.domain.Transaction;
 import io.github.alirezaamini.balance.domain.TransactionRequest;
@@ -10,7 +9,6 @@ import io.github.alirezaamini.balance.domain.exception.AccountNotFoundException;
 import io.github.alirezaamini.balance.domain.exception.IdempotencyConflictException;
 import io.github.alirezaamini.balance.domain.exception.InsufficientFundsException;
 import io.github.alirezaamini.balance.persistence.AccountRepository;
-import io.github.alirezaamini.balance.persistence.LedgerRepository;
 import io.github.alirezaamini.balance.persistence.TransactionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -27,27 +25,24 @@ import java.util.Map;
  * and then replay),</li>
  * <li>locks the involved account rows in a global order (no lost updates, no
  * deadlocks),</li>
- * <li>checks funds, writes the new balances and ledger entries,</li>
+ * <li>checks funds and writes the new balances,</li>
  * <li>records the outcome against the transactionId.</li>
  * </ol>
  * Either everything commits or nothing does, which is what makes a transfer
  * atomic.
  */
 @Service
-public class LedgerBalanceService implements BalanceService {
+public class DatabaseBalanceService implements BalanceService {
 
     private final AccountRepository accounts;
     private final TransactionRepository transactions;
-    private final LedgerRepository ledger;
     private final TransactionTemplate transactionTemplate;
 
-    public LedgerBalanceService(AccountRepository accounts,
+    public DatabaseBalanceService(AccountRepository accounts,
             TransactionRepository transactions,
-            LedgerRepository ledger,
             TransactionTemplate transactionTemplate) {
         this.accounts = accounts;
         this.transactions = transactions;
-        this.ledger = ledger;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -95,14 +90,10 @@ public class LedgerBalanceService implements BalanceService {
             }
             Account debited = source.debit(request.amount());
             accounts.updateBalance(debited);
-            ledger.append(debited.id(), request.transactionId(), LedgerEntryType.DEBIT,
-                    -request.amount(), debited.balance());
         }
         if (request.hasDestination()) {
             Account credited = locked.get(request.destinationAccountId()).credit(request.amount());
             accounts.updateBalance(credited);
-            ledger.append(credited.id(), request.transactionId(), LedgerEntryType.CREDIT,
-                    request.amount(), credited.balance());
         }
         return transactions.complete(request.transactionId(), TransactionStatus.APPLIED, null);
     }

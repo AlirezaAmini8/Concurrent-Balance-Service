@@ -53,18 +53,18 @@ class BalanceApiTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void transferMovesMoneyAndShowsUpInTheLedger() throws Exception {
+    void transferMovesMoneyBetweenAccounts() throws Exception {
         postJson("/api/v1/transfers", """
                 {"sourceAccountId": "A", "destinationAccountId": "B", "amount": 300, "transactionId": "TX-1"}""")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("APPLIED"));
 
-        mvc.perform(get("/api/v1/accounts/B/ledger"))
+        mvc.perform(get("/api/v1/accounts/A"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[1].type").value("CREDIT"))
-                .andExpect(jsonPath("$[1].amount").value(300))
-                .andExpect(jsonPath("$[1].balanceAfter").value(800));
+                .andExpect(jsonPath("$.balance").value(700));
+        mvc.perform(get("/api/v1/accounts/B"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.balance").value(800));
     }
 
     @Test

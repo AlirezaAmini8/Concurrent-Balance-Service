@@ -29,6 +29,6 @@ public abstract class PostgresIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
-        jdbc.sql("TRUNCATE ledger_entries, transactions, accounts").update();
+        jdbc.sql("TRUNCATE transactions, accounts").update();
     }
 }

@@ -1,6 +1,5 @@
 package io.github.alirezaamini.balance.service;
 
-import io.github.alirezaamini.balance.domain.LedgerEntryType;
 import io.github.alirezaamini.balance.domain.RejectionReason;
 import io.github.alirezaamini.balance.domain.Transaction;
 import io.github.alirezaamini.balance.domain.TransactionStatus;
@@ -12,7 +11,7 @@ import io.github.alirezaamini.balance.domain.exception.InvalidAmountException;
 import io.github.alirezaamini.balance.domain.exception.SameAccountTransferException;
 import io.github.alirezaamini.balance.domain.exception.TransactionNotFoundException;
 import io.github.alirezaamini.balance.domain.exception.ValidationException;
-import io.github.alirezaamini.balance.support.LedgerInvariants;
+import io.github.alirezaamini.balance.support.DatabaseInvariants;
 import io.github.alirezaamini.balance.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
@@ -21,7 +20,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.tuple;
 
 class BalanceServiceTest extends PostgresIntegrationTest {
 
@@ -36,7 +34,7 @@ class BalanceServiceTest extends PostgresIntegrationTest {
 
     @AfterEach
     void invariantsHold() {
-        LedgerInvariants.assertHold(jdbc);
+        DatabaseInvariants.assertHold(jdbc);
     }
 
     @Nested
@@ -111,16 +109,6 @@ class BalanceServiceTest extends PostgresIntegrationTest {
 
             assertThat(balanceService.getBalance("A")).isEqualTo(700);
             assertThat(balanceService.getBalance("B")).isEqualTo(800);
-            assertThat(accountService.getLedger("A"))
-                    .extracting("type", "amount", "balanceAfter", "transactionId")
-                    .containsExactly(
-                            tuple(LedgerEntryType.OPENING, 1_000L, 1_000L, null),
-                            tuple(LedgerEntryType.DEBIT, -300L, 700L, "TX-1"));
-            assertThat(accountService.getLedger("B"))
-                    .extracting("type", "amount", "balanceAfter", "transactionId")
-                    .containsExactly(
-                            tuple(LedgerEntryType.OPENING, 500L, 500L, null),
-                            tuple(LedgerEntryType.CREDIT, 300L, 800L, "TX-1"));
         }
 
         @Test

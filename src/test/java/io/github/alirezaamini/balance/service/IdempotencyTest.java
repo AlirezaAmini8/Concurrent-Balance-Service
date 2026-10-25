@@ -3,7 +3,7 @@ package io.github.alirezaamini.balance.service;
 import io.github.alirezaamini.balance.domain.exception.AccountNotFoundException;
 import io.github.alirezaamini.balance.domain.exception.IdempotencyConflictException;
 import io.github.alirezaamini.balance.domain.exception.InsufficientFundsException;
-import io.github.alirezaamini.balance.support.LedgerInvariants;
+import io.github.alirezaamini.balance.support.DatabaseInvariants;
 import io.github.alirezaamini.balance.support.PostgresIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -25,7 +25,7 @@ class IdempotencyTest extends PostgresIntegrationTest {
 
     @AfterEach
     void invariantsHold() {
-        LedgerInvariants.assertHold(jdbc);
+        DatabaseInvariants.assertHold(jdbc);
     }
 
     @Test
@@ -37,7 +37,6 @@ class IdempotencyTest extends PostgresIntegrationTest {
         balanceService.credit("A", 100, "TX-1");
 
         assertThat(balanceService.getBalance("A")).isEqualTo(1_100);
-        assertThat(accountService.getLedger("A")).hasSize(2);
     }
 
     @Test

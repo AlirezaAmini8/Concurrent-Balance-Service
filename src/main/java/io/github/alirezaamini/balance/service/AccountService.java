@@ -1,28 +1,21 @@
 package io.github.alirezaamini.balance.service;
 
 import io.github.alirezaamini.balance.domain.Account;
-import io.github.alirezaamini.balance.domain.LedgerEntry;
-import io.github.alirezaamini.balance.domain.LedgerEntryType;
 import io.github.alirezaamini.balance.domain.TransactionRequest;
 import io.github.alirezaamini.balance.domain.exception.AccountAlreadyExistsException;
 import io.github.alirezaamini.balance.domain.exception.AccountNotFoundException;
 import io.github.alirezaamini.balance.domain.exception.ValidationException;
 import io.github.alirezaamini.balance.persistence.AccountRepository;
-import io.github.alirezaamini.balance.persistence.LedgerRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.List;
 
 @Service
 public class AccountService {
 
     private final AccountRepository accounts;
-    private final LedgerRepository ledger;
 
-    public AccountService(AccountRepository accounts, LedgerRepository ledger) {
+    public AccountService(AccountRepository accounts) {
         this.accounts = accounts;
-        this.ledger = ledger;
     }
 
     @Transactional
@@ -42,18 +35,10 @@ public class AccountService {
         if (!accounts.insert(account)) {
             throw new AccountAlreadyExistsException(accountId);
         }
-        if (initialBalance > 0) {
-            ledger.append(accountId, null, LedgerEntryType.OPENING, initialBalance, initialBalance);
-        }
         return account;
     }
 
     public Account getAccount(String accountId) {
         return accounts.findById(accountId).orElseThrow(() -> new AccountNotFoundException(accountId));
-    }
-
-    public List<LedgerEntry> getLedger(String accountId) {
-        getAccount(accountId);
-        return ledger.findByAccountId(accountId);
     }
 }
